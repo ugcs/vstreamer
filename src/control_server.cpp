@@ -6,7 +6,6 @@
 * @file control_server.cpp
 */
 
-
 #include "ugcs/vstreamer/control_server.h"
 
 namespace ugcs {
@@ -19,10 +18,12 @@ namespace vstreamer {
 
 	ControlServer::~ControlServer() {
 	}
-  
-  
+
+
 	void ControlServer::start() {
-		
+
+        startSSDPListener();
+
 		std::thread t(&ControlServer::execute, this);
 		t.detach();
 	}
@@ -36,18 +37,6 @@ namespace vstreamer {
 		
 	}
   
-  
-	void ControlServer::checkDeviceAvailability(video_device dev) {
-
-        bool res = dev.init_video_cap();
-
-        if (res) {
-            dev.port = this->find_next_port();
-            device_list[dev.name] = dev;
-        }
-	}
-
-
     int ControlServer::find_next_port(){
 
         bool found_next_port = false;
@@ -69,6 +58,7 @@ namespace vstreamer {
 	void ControlServer::scanForDevices() {
 
 		auto props = ugcs::vsm::Properties::Get_instance();
+
 
         // get streams (ardrone and gopro) parameters from config
 		for (auto iter = props->begin("vstreamer.inputstream"); iter != props->end(); iter++) {
@@ -104,13 +94,16 @@ namespace vstreamer {
 
 
 		while (!stop_requested_) {
-			VS_WAIT(1000);
+
+
+            VS_WAIT(1000);
 			
 			// find cameras
 			std::vector<video_device> found_devices;
             video::Get_device_list(found_devices, server_parameters);
             // add streams
             found_devices.insert(found_devices.end(), server_parameters.input_streams.begin(), server_parameters.input_streams.end());
+
             int device_count = found_devices.size();
 
             // start http server for every new found device
@@ -118,20 +111,32 @@ namespace vstreamer {
                 // if device already in list- do not cap
                 std::string device_name = found_devices[i].name;
                 if (device_list.count(device_name) == 0) {
-                    checkDeviceAvailability(found_devices[i]);
-                    VS_WAIT(1000);
-                    // check if device server is not running already
-                    if (device_list.count(device_name) > 0 && !device_list[device_name].server_started) {
-                        ugcs::vstreamer::MjpegServer *mjpeg_server;
-                        if (http_servers.count(device_name) > 0) {
-                            mjpeg_server = http_servers[device_name];
-                            //found_devices[i].port = mjpeg_server->port_;
-                            mjpeg_server->init(&device_list[device_name]);
-                        } else {
-                            mjpeg_server = new ugcs::vstreamer::MjpegServer(device_list[device_name].port, &device_list[device_name]);
-                            http_servers[device_name] = mjpeg_server;
+
+                    // ok, new device.
+                    // check if this device is capable to capture video
+                    bool res = found_devices[i].init_video_cap();
+                    if (res) {
+
+                        found_devices[i].port = this->find_next_port();
+                        device_list[device_name] = found_devices[i];
+                        device_list[device_name].init_outer_streams();
+
+                        VS_WAIT(500);
+
+                        // check if device server is not running already
+                        if (!device_list[device_name].server_started) {
+
+                            ugcs::vstreamer::MjpegServer *mjpeg_server;
+                            if (http_servers.count(device_name) > 0) {
+                                mjpeg_server = http_servers[device_name];
+                                mjpeg_server->init(&device_list[device_name]);
+                            } else {
+                                mjpeg_server = new ugcs::vstreamer::MjpegServer(device_list[device_name].port,
+                                                                                &device_list[device_name]);
+                                http_servers[device_name] = mjpeg_server;
+                            }
+                            mjpeg_server->start();
                         }
-                        mjpeg_server->start();
                     }
                 }
             }
@@ -156,16 +161,17 @@ namespace vstreamer {
                     ms->stop();
                     device_list.erase(server_device_name);
                 }
-
             }
-
-
 		}
 	}
 		
 
 	void ControlServer::client(sockets::Socket_handle& fd) {
-		int cnt;
+
+		int64_t request_ts_milli = utils::getMilliseconds();
+        int64_t request_ts_micro = utils::getMicroseconds();
+
+        int cnt;
 		char buffer[BUFFER_SIZE] = { 0 };
         //, *pb = buffer;
 		iobuffer iobuf;
@@ -251,7 +257,7 @@ namespace vstreamer {
             std::string header(buffer);
             std::string query = utils::getURIQueryString(header, "playback?");
             LOG_DEBUG("Command Server: Request for playback with query %s.", query.c_str());
-            startPlayback(fd, query);
+            startPlayback(fd, query, request_ts_micro);
             break;
         }
         case A_GETVIDEOINFO:
@@ -292,7 +298,9 @@ namespace vstreamer {
                     return;
                 }
                 if (strstr(buffer, "Content-Length: ") != NULL) {
-                    std::string val = strdup(buffer + strlen("Content-Length: "));
+                    char *val_str = strdup(buffer + strlen("Content-Length: "));
+                    std::string val(val_str);
+                    free(val_str);
                     content_length = std::stoi(val);
                 }
             } while (cnt > 2 && !(buffer[0] == '\r' && buffer[1] == '\n'));
@@ -318,11 +326,13 @@ namespace vstreamer {
             std::string body(body_buffer);
             LOG_DEBUG("Body=%s", body.c_str());
 
+            delete [] body_buffer;
+
             if (req.type == A_SETPARAMS) {
                 writeParamsInfo(fd, body);
             }
             else if (req.type == A_SETSTREAM) {
-                writeStreamInfo(fd, body);
+                writeStreamInfo(fd, body, request_ts_milli);
             }
             else if (req.type == A_SETOUTERSTREAM) {
                 writeOuterStreamInfo(fd, body);
@@ -335,7 +345,6 @@ namespace vstreamer {
 			sendHelpMessage(fd);
 		}
 		
-		ugcs::vstreamer::sockets::Close_socket(fd);
 		freeRequest(&req);
 
 		LOG("Command Server: Disconnecting HTTP client");
@@ -350,8 +359,11 @@ namespace vstreamer {
 			//sockets::Close_socket(sd[i]);
 		}
 
-		sockets::Done_sockets();
-	}
+        stopSSDPListener();
+
+        sockets::Done_sockets();
+
+    }
 	
 	void ControlServer::sendStreamsInfo(ugcs::vstreamer::sockets::Socket_handle& fd) {
 		/* message looks like
@@ -378,7 +390,7 @@ namespace vstreamer {
 				msg += "\"index\":\"" + std::to_string(dv->index) + "\", ";
                 msg += "\"is_recording_active\":" + (std::string)(dv->is_recording_active ? "true" : "false") + ", ";
                 msg += "\"video_id\":\"" + dv->recording_video_id + "\", ";
-                msg += "\"recording_duration_sec\":" + std::to_string((int)((dv->recording_current_timestamp - dv->recording_first_timestamp)/1000)) + ", ";
+                msg += "\"recording_duration_sec\":" + std::to_string((int)(dv->get_recording_duration()/1000)) + ", ";
                 msg += "\"last_recording_error_code\":\"" + dv->last_recording_error_code + "\", ";
 				msg += "\"type\":" + std::to_string(dv->type) + ", ";
 
@@ -390,7 +402,7 @@ namespace vstreamer {
                     } else {
                         msg += ", \r\n";
                     }
-                    base_save *os = os_iter->second;
+                    std::shared_ptr<base_save> os = os_iter->second;
                     msg += "{\"url\":\"" + os->output_filename + "\", ";
                     if (os->outer_stream_type == VSTR_OST_USTREAM) {
                         msg += "\"type\":\"" + VSTR_OST_USTREAM_NAME + "\", ";
@@ -494,10 +506,9 @@ namespace vstreamer {
         return;
     }
 
-    void ControlServer::writeStreamInfo(ugcs::vstreamer::sockets::Socket_handle& fd, std::string body) {
+    void ControlServer::writeStreamInfo(ugcs::vstreamer::sockets::Socket_handle& fd, std::string body, int64_t ts_milli) {
         // parse body
         // {"port": 8082, "is_recording_active": true, "video_id": "test"}
-        int64_t request_ts = utils::getMilliseconds();
         std::string response = "";
         Json::Reader jreader;
         Json::Value root;
@@ -543,7 +554,7 @@ namespace vstreamer {
                     else {
                         // try to init recording session
                         bool res = dv->init_recording(server_parameters.saved_video_folder,
-                                                      req_recording_filename, response, request_ts);
+                                                      req_recording_filename, response, ts_milli);
                         if (!res) {
                             sendCode(fd, 400, response.c_str(), "application/json");
                             return;
@@ -613,7 +624,7 @@ namespace vstreamer {
 
     }
 
-    void ControlServer::startPlayback(ugcs::vstreamer::sockets::Socket_handle& fd, std::string query) {
+    void ControlServer::startPlayback(ugcs::vstreamer::sockets::Socket_handle& fd, std::string query, int64_t ts_micro) {
 
         //parse query string
         //video_id=XXXX&speed=XX&pos=XXXXX
@@ -643,9 +654,11 @@ namespace vstreamer {
         // create fiilename
         std::string filename = utils::createFullFilename(server_parameters.saved_video_folder, video_id, VSTR_RECORDING_VIDEO_EXTENSION);
 
+
+
         // check if file exists
         if (!utils::checkFileExists(filename)) {
-            std::string response = "File " + filename + " not found!";
+            std::string response = "File " + filename + " not found.";
             sendCode(fd, 400, response.c_str(), "application/json");
             return;
         }
@@ -658,14 +671,12 @@ namespace vstreamer {
         vd->playback_video_id = video_id;
         vd->playback_speed = speed;
         vd->playback_starting_pos = pos;
-        bool res = vd->open();
+        vd->playback_request_ts = ts_micro;
 
-        if (res) {
-            ffmpeg_playback *fp;
-            fp = new ffmpeg_playback(vd);
-            // start playback
-            fp->start(fd);
-        }
+        ffmpeg_playback *fp;
+        fp = new ffmpeg_playback(vd);
+        // start playback
+        fp->start(fd);
     }
 
     void ControlServer::getVideoMetadata(ugcs::vstreamer::sockets::Socket_handle &fd, std::string video_id) {
@@ -779,7 +790,10 @@ namespace vstreamer {
                 "Content-Disposition: attachment; filename=\"%s\"\r\n"
                 "Content-Length: %" PRId64 "\r\n"
                 "\r\n", short_name.c_str(), filesize);
-        send(fd, buffer_to_send_header, strlen(buffer_to_send_header), 0);
+        if (send(fd, buffer_to_send_header, strlen(buffer_to_send_header), 0) < 0) {
+            LOG_ERROR("Error while downloading video (message header) %s.", filename.c_str());
+            return;
+        }
         // send chunks
         const char crlf[]       = { '\r', '\n' };
         const char last_chunk[] = { '0', '\r', '\n' };
@@ -792,17 +806,99 @@ namespace vstreamer {
             video_file.read(buffer, bytes_to_read);
             // send chunk header
             sprintf(chunk_header_buffer, "%s\r\n", utils::long_to_hex_string(bytes_to_read).c_str());
-            send(fd, chunk_header_buffer, strlen(chunk_header_buffer), 0);
+            if (send(fd, chunk_header_buffer, strlen(chunk_header_buffer), 0) < 0) {
+                LOG_ERROR("Error while downloading video (chunk header) %s.", filename.c_str());
+                sockets::Close_socket(fd);
+                return;
+            }
             // send chunk with crlf
-            send(fd, buffer, bytes_to_read, 0);
-            send(fd, crlf, 2, 0);
+            if (send(fd, buffer, bytes_to_read, 0) < 0) {
+                LOG_ERROR("Error while downloading video (chunk) %s.", filename.c_str());
+                sockets::Close_socket(fd);
+                return;
+            }
+            if (send(fd, crlf, 2, 0) < 0) {
+                LOG_ERROR("Error while downloading video (chunk tail) %s.", filename.c_str());
+                sockets::Close_socket(fd);
+                return;
+            }
             // remaining filesize to send
             filesize -= bytes_to_read;
         }
         // send final chunk
-        send(fd, last_chunk, 3, 0);
-        send(fd, crlf, 2, 0);
+        if (send(fd, last_chunk, 3, 0) < 0) {
+            LOG_ERROR("Error while downloading video (last chunk) %s.", filename.c_str());
+            sockets::Close_socket(fd);
+            return;
+        }
+        if (send(fd, crlf, 2, 0) < 0) {
+            LOG_ERROR("Error while downloading video (tail) %s.", filename.c_str());
+            sockets::Close_socket(fd);
+            return;
+        }
+        sockets::Close_socket(fd);
         LOG_DEBUG("Finish to send %s.", filename.c_str());
+    }
+
+
+    void ControlServer::startSSDPListener() {
+
+        discoverer = ugcs::vsm::Service_discovery_processor::Create();;
+
+        proc_context = ugcs::vsm::Request_processor::Create("callback processor");
+        proc_context->Enable();
+
+        worker = ugcs::vsm::Request_worker::Create(
+                "VSTREAMER processor worker",
+                std::initializer_list<ugcs::vsm::Request_container::Ptr>({proc_context}));
+
+        worker->Enable();
+        discoverer->Enable();
+
+        // detector
+        // TODO: move it to method
+        auto detector = [&](std::string type, std::string name, std::string loc, std::string id, bool)
+        {
+            LOG_DEBUG("SSDP Video stream found NT:%s, USN:%s, ID:%s, LOC:%s ", type.c_str(), name.c_str(), id.c_str(), loc.c_str());
+            video_device ssdp_stream_video_device(DEV_STREAM);
+            // create parameters string to initialize STREAM Device
+            // as name + (id) + location + timeout:
+            // DJI Android Video (79cb1eb7);rtsp://192.168.8.103:8083;60
+            std::string stream_name = name + " (" + id + ")";
+            std::string val = stream_name + ";" + loc + ";60";
+            ssdp_stream_video_device.init_stream(val);
+
+            int found_device_index = -1;
+            //find video device with same name
+            for(int i=0; i<server_parameters.input_streams.size(); i++){
+                if (server_parameters.input_streams[i].name == stream_name) {
+                    found_device_index = i;
+                }
+            }
+            if (found_device_index >= 0) {
+                // replace stream info if found
+                server_parameters.input_streams[found_device_index] = ssdp_stream_video_device;
+            } else {
+                // add new stream info else
+                server_parameters.input_streams.push_back(ssdp_stream_video_device);
+            }
+
+        };
+
+        discoverer->Subscribe_for_service(SSDP_VIDEO_SERVICE_NT, ugcs::vsm::Service_discovery_processor::Make_detection_handler(detector), proc_context);
+    }
+
+
+    void ControlServer::stopSSDPListener() {
+        if (discoverer != NULL) {
+            discoverer->Disable();
+        }
+        if (proc_context != NULL) {
+            proc_context->Disable();
+        }
+        if (worker != NULL) {
+            worker->Disable();
+        }
     }
 
 }

@@ -40,7 +40,7 @@
 //* default framerate bit tolerance /
 #define DEFAULT_FRAMERATE_BIT_TOLERANCE 400000000
 // maximum number of errors while trying to get frame
-#define MAX_ERROR_NUMBER_GET_FRAME 5
+#define MAX_ERROR_NUMBER_GET_FRAME 10
 
 
 
@@ -91,6 +91,7 @@ namespace ugcs{
 
             /** input format context (dshow, video4linux or avfoundation) */
             AVFormatContext* format_context;
+
             //*  input format */
             AVInputFormat *fmt;
             //*  name of input device or stream */
@@ -125,8 +126,6 @@ namespace ugcs{
             int videoStream;
             //* result of ffmpeg operations /
             int res;
-            //* ffmpeg frame flag/
-            int frameFinished;
 
             void fill_codec_context(AVCodecContext *ctx);
 
@@ -137,8 +136,9 @@ namespace ugcs{
             int64_t prev_dts;
             int64_t start_time;
 
+            bool format_context_initialized;
 
-
+            bool is_closing;
 
         };
     }

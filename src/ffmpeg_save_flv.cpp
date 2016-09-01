@@ -14,16 +14,34 @@ namespace ugcs {
 
 
         ffmpeg_save_flv::ffmpeg_save_flv() {
-            frame = new video_frame();
-            flv_packet = new AVPacket();
-            save_done = true;
-            stop_init = false;
-            outer_strem_error_code = VSTR_OST_ERR_NONE;
+            this->frame = new video_frame();
+            this->flv_packet = new AVPacket();
+            this->save_done = true;
+            this->stop_init = false;
+            this->outer_strem_error_code = VSTR_OST_ERR_NONE;
+            this->is_initialized = false;
+            this->is_running = false;
+            this->flv_format_context = NULL;
+            this->flv_fmt = NULL;
+            this->flv_stream = NULL;
+            this->flv_codec = NULL;
+            this->flv_codec_context = NULL;
+            this->type = VSTR_SAVE_USTREAM; // default
+
+            // on avlibcodec 54 and 53 (linux) we cannot create MJPEG encoder for pix_fmt=AV_PIX_FMT_YUV420P, so
+// we need to use AV_PIX_FMT_YUVJ420P. But in versions 55+ this format is deprecated. So on, in version
+// 56.1.0 (Ubuntu 14.10) we need use AV_PIX_FMT_YUVJ420P again.
+#if ((LIBAVCODEC_VERSION_INT >= ((55<<16)+(0<<8)+0)) && (LIBAVCODEC_VERSION_INT < ((56<<16)+(1<<8)+0)))
+            pEncodedFormat = AV_PIX_FMT_YUV420P; //AV_PIX_FMT_YUVJ420P;
+#else
+            pEncodedFormat = AV_PIX_FMT_YUVJ420P; //AV_PIX_FMT_YUVJ420P;
+#endif
+
         }
 
 
         ffmpeg_save_flv::~ffmpeg_save_flv() {
-            close();
+            this->close();
         }
 
 
@@ -38,7 +56,8 @@ namespace ugcs {
 
                 // simple check for valid url
                 regex::smatch sm;
-                regex::regex re ("(http|https|rtmp)\\://){1}\\S+)");
+                // (http|https|rtmp):\/\/\S+
+                regex::regex re ("(http|https|rtmp):\\/\\/\\S+");
                 if (!regex::regex_match(filename, sm, re)) {
                     return false;
                 }
@@ -48,6 +67,7 @@ namespace ugcs {
             }
             return true;
         }
+
 
         bool ffmpeg_save_flv::init(std::string folder, std::string session_name, int width, int height, int type, int64_t request_ts) {
 
@@ -60,14 +80,7 @@ namespace ugcs {
             avcodec_register_all();
             avformat_network_init();
 
-            // on avlibcodec 54 and 53 (linux) we cannot create MJPEG encoder for pix_fmt=AV_PIX_FMT_YUV420P, so
-// we need to use AV_PIX_FMT_YUVJ420P. But in versions 55+ this format is deprecated. So on, in version
-// 56.1.0 (Ubuntu 14.10) we need use AV_PIX_FMT_YUVJ420P again.
-#if ((LIBAVCODEC_VERSION_INT >= ((55<<16)+(0<<8)+0)) && (LIBAVCODEC_VERSION_INT < ((56<<16)+(1<<8)+0)))
-            pEncodedFormat = AV_PIX_FMT_YUV420P; //AV_PIX_FMT_YUVJ420P;
-#else
-            pEncodedFormat = AV_PIX_FMT_YUVJ420P; //AV_PIX_FMT_YUVJ420P;
-#endif
+
             bool res;
             res = this->set_filename(folder, session_name, type);
             if (!res) {
@@ -88,23 +101,26 @@ namespace ugcs {
             t.detach();
 
             LOG_DEBUG("FLV Saving process started");
+
+            this->is_initialized = true;
             return true;
         }
 
+
         void ffmpeg_save_flv::run() {
             set_outer_stream_state(VSTR_OST_STATE_PENDING, "");
-            stop_init = false;
-            while (this->outer_stream_state == VSTR_OST_STATE_RUNNING ||
-                    this->outer_stream_state == VSTR_OST_STATE_PENDING) {
+
+            this->is_running = true;
+            while (is_running) {
+                // notification will come from video_device when new frame appears.
                 std::unique_lock<std::mutex> lock(this->frame->video_mutex_);
                 this->frame->video_condition_.wait(lock);
-                if (stop_init) {break;}
-                this->save_frame();
+                if (is_running) {
+                    this->save_frame();
+                }
             }
-            if (stop_init) {
-                VS_WAIT(100);
-                this->outer_stream_stop_condition.notify_all();
-            }
+            VS_WAIT(1000);
+            this->stopping_condition_.notify_all();
         }
 
 
@@ -174,6 +190,9 @@ namespace ugcs {
         }
 
 
+        int64_t ffmpeg_save_flv::get_recording_duration() { return 0; }
+
+
         bool ffmpeg_save_flv::save_frame() {
 
 // there is no av_packet_from_data in older versions
@@ -202,7 +221,7 @@ namespace ugcs {
 
             t_flv_packet->data=NULL;
             t_flv_packet->size=0;
-            delete[] t_flv_packet;
+            delete t_flv_packet;
 
             save_done = true;
             return true;
@@ -212,15 +231,39 @@ namespace ugcs {
 #endif
         }
 
+
         bool ffmpeg_save_flv::save_dummy_frame(int64_t ts) {
             return false;
         }
 
         void ffmpeg_save_flv::close() {
-            std::unique_lock<std::mutex> lock(this->outer_stream_stop_mutex_);
-            stop_init = true;
-            this->outer_stream_stop_condition.wait(lock);
+
+            LOG_INFO("Stopping video broadcasting process (%s)", this->output_filename.c_str());
+            if (this->is_running) {
+                this->is_running = false;
+                this->frame->video_condition_.notify_all();
+                LOG_INFO("Stopping video broadcasting process, closing frames (%s)", this->output_filename.c_str());
+                // wait until run-loop stop
+                std::unique_lock<std::mutex> lock(this->stopping_mutex_);
+                // notification will come from video_device when run-loop stops
+                this->stopping_condition_.wait(lock);
+            } else {
+                LOG_INFO("Stopping video broadcasting process, broadcasting is not active (%s)", this->output_filename.c_str());
+            }
+            if (this->is_initialized) {
+                LOG_INFO("Stopping video broadcasting process, free codec resources (%s)", this->output_filename.c_str());
+                // free ffmpeg resources
+                avcodec_close(flv_codec_context);
+                avformat_close_input(&flv_format_context);
+                this->is_initialized = false;
+
+            }else {
+                LOG_INFO("Video broadcasting process (%s) has not been initialized", this->output_filename.c_str());
+            }
+
             set_outer_stream_state(VSTR_OST_STATE_DISABLED, "");
+            LOG_INFO("Video broadcasting process (%s) is succesfully stopped", this->output_filename.c_str());
+
         }
 
 

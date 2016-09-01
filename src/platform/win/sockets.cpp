@@ -43,7 +43,10 @@ ugcs::vstreamer::sockets::Close_socket(Socket_handle s)
     return closesocket(s);
 }
 
-
+int
+ugcs::vstreamer::sockets::get_error() {
+	return WSAGetLastError();
+}
 
 
 

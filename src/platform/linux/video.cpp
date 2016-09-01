@@ -36,9 +36,10 @@ int ugcs::vstreamer::video::Get_autodetected_device_list(std::vector<std::string
 	else {
 		LOG_DEBUG("Get_device_count: Error opening dir video4linux");
 	}
-	
+	closedir(dir);
 	return i;
 }
+
 
 
 

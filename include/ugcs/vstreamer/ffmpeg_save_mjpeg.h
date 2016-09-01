@@ -92,6 +92,8 @@ namespace ugcs{
             */
             void close();
 
+            int64_t get_recording_duration();
+
         private:
 
             /** @brief Create synthetic black frame of given height and width. */
@@ -110,9 +112,6 @@ namespace ugcs{
 
             //* output codec context (MJPEG) */
             AVCodecContext *mjpeg_codec_context;
-
-            //* output (mjpeg) packet /
-            //AVPacket mjpeg_packet;
 
             //* output pixel format (AV_PIX_FMT_YUV420P or AV_PIX_FMT_YUVJ420P depends on libav versions) /
             AVPixelFormat  pEncodedFormat;

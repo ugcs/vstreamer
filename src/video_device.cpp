@@ -7,6 +7,7 @@
 */
 
 
+#include <ugcs/vstreamer/common.h>
 #include "ugcs/vstreamer/video_device.h"
 
 
@@ -39,25 +40,35 @@ namespace ugcs {
             this->cap_type = CAP_NOT_DEFINED;
             this->is_cap_defined = false;
             this->is_recording_active = false;
-            this->recording_first_timestamp = -1;
-            this->recording_current_timestamp = -1;
             this->is_outer_streams_active = false;
             // no choises for now;
-            this->file_save_impl = new ffmpeg_save_mjpeg();
-            // fill outer streams (tree types for now)
-            this->add_outer_stream(VSTR_OST_USTREAM, VSTR_OST_STATE_DISABLED);
-            this->add_outer_stream(VSTR_OST_TWITCH, VSTR_OST_STATE_NOT_AVAILABLE);
-            this->add_outer_stream(VSTR_OST_YOUTUBE, VSTR_OST_STATE_NOT_AVAILABLE);
+            this->file_save_impl = 0;
 
             this->playback_video_id="";
             this->playback_starting_pos = 0;
             this->playback_speed = 1.0;
 
+            this->index=-1;
+            this->port=-1;
+            this->timeout=-1;
+            this->record_request_ts=-1;
+            this->playback_request_ts=-1;
+            this->cap_impl = NULL;
+            this->type = DEV_CAMERA; // default value
+
         }
 
+        void video_device::init_outer_streams() {
+            // fill outer streams (tree types for now)
+            this->add_outer_stream(VSTR_OST_USTREAM, VSTR_OST_STATE_DISABLED);
+            this->add_outer_stream(VSTR_OST_TWITCH, VSTR_OST_STATE_NOT_AVAILABLE);
+            this->add_outer_stream(VSTR_OST_YOUTUBE, VSTR_OST_STATE_NOT_AVAILABLE);
+        }
+
+
         void video_device::add_outer_stream(outer_stream_type_enum type, outer_stream_state_enum state) {
-            base_save *stream_impl;
-            stream_impl = new ffmpeg_save_flv();
+            std::shared_ptr<base_save> stream_impl;
+            stream_impl = std::make_shared<ffmpeg_save_flv>();
             stream_impl->outer_stream_type = type;
             stream_impl->outer_stream_state = state;
             outer_streams[type] = stream_impl;
@@ -106,6 +117,7 @@ namespace ugcs {
 
         }
 
+
         bool video_device::init_video_cap() {
             bool result;
 #ifdef FFMPEG_CAP
@@ -130,6 +142,7 @@ namespace ugcs {
             return false;
         }
 
+
         bool video_device::open() {
 
             if (!this->is_cap_defined) {
@@ -140,6 +153,7 @@ namespace ugcs {
             }
             return false;
         }
+
 
         bool video_device::get_frame( unsigned char **encoded_buffer, int& encoded_buffer_size){
 
@@ -153,47 +167,25 @@ namespace ugcs {
             if (flags>0) {
                 bool res = cap_impl->get_frame(this, frames, flags);
 
-                for (auto iter = outer_streams.begin(); iter != outer_streams.end(); ++iter) {
-                    base_save *os = iter->second;
-                    if (os->is_running && frames.count(VSTR_CODEC_FLV) > 0 && this->video_cap_opened) {
-                        video_frame *vf = frames.at(VSTR_CODEC_FLV);
-
-                        os->frame->encoded_buffer_size = vf->encoded_buffer_size;
-                        os->frame->encoded_buffer = (unsigned char*)realloc(os->frame->encoded_buffer,
-                                                                            (size_t) os->frame->encoded_buffer_size);
-                        memcpy(os->frame->encoded_buffer, vf->encoded_buffer, (size_t) os->frame->encoded_buffer_size);
-                        os->frame->ts = vf->ts;
-                        os->frame->video_condition_.notify_all();
-
-                    }
-                }
-
-                if (res && this->is_recording_active && this->is_cap_defined) {
-                    if (frames.count(VSTR_CODEC_MJPEG) > 0 ) {
-                        // save_frame
-                        // need to copy video_frame and to put it to queue;
-
-                        video_frame *vf = frames.at(VSTR_CODEC_MJPEG);
-
-                        file_save_impl->frame->encoded_buffer_size = vf->encoded_buffer_size;
-                        file_save_impl->frame->encoded_buffer = (unsigned char*)realloc(file_save_impl->frame->encoded_buffer,
-                                                                                        (size_t) file_save_impl->frame->encoded_buffer_size);
-                        memcpy(file_save_impl->frame->encoded_buffer, vf->encoded_buffer,
-                               (size_t) file_save_impl->frame->encoded_buffer_size);
-
-                        file_save_impl->frame->ts = vf->ts;
-
-                        // update ts info
-                        this->recording_current_timestamp = vf->ts;
-                        if (this->recording_first_timestamp < 0) {
-                            recording_first_timestamp = recording_current_timestamp;
+                // add frame to every enabled broadcasting
+                if (res && this->video_cap_opened) {
+                    for (auto iter = outer_streams.begin(); iter != outer_streams.end(); ++iter) {
+                        std::shared_ptr<base_save> os = iter->second;
+           //             if (os->is_process_running() && frames.count(VSTR_CODEC_FLV) > 0 && this->video_cap_opened) {
+                        if (os->is_process_running()) {
+                            os->add_frame(&frames, VSTR_CODEC_FLV);
                         }
-
-                        file_save_impl->frame->video_condition_.notify_all();
                     }
                 }
 
-                // if is cap defined
+                // add frame to file recorder if recording is turning on.
+                if (res && this->is_recording_active && this->is_cap_defined) {
+                    if (file_save_impl) {
+                        file_save_impl->add_frame(&frames, VSTR_CODEC_MJPEG);
+                    }
+                }
+
+                // copy frame for streaming to clients
                 if (res && this->is_cap_defined) {
                     if (frames.count(VSTR_CODEC_MJPEG) > 0 ) {
                         // to buffer
@@ -208,11 +200,19 @@ namespace ugcs {
             return false;
         }
 
+
         void video_device::close(){
             if (this->is_cap_defined) {
-                cap_impl->close();
+                if (cap_impl) {
+                    LOG_DEBUG("Video device %s: capturing implementation is going to be closed", this->name.c_str());
+                    this->video_cap_opened = false;
+                    cap_impl->close();
+                    LOG_DEBUG("Video device %s: capturing implementation was closed successfully", this->name.c_str());
+                }
+                is_cap_defined = false;
             }
         }
+
 
         bool video_device::init_recording(std::string folder, std::string filename, std::string &result_msg, int64_t request_ts) {
             result_msg = "";
@@ -225,9 +225,8 @@ namespace ugcs {
                     return false;
                 }
             }
-
+            file_save_impl = std::make_shared<ffmpeg_save_mjpeg>();
             this->is_recording_active = file_save_impl->init(folder, filename, this->width, this->height, VSTR_SAVE_FILE, record_request_ts);
-
 
             if (!this->is_recording_active) {
                 result_msg=std::to_string(VSTR_REC_ERR_RECORD_SESSION_ERROR);
@@ -242,7 +241,7 @@ namespace ugcs {
         bool video_device::set_outer_stream(outer_stream_type_enum type, std::string url, bool is_active, std::string &result_msg) {
 
             result_msg = "";
-            base_save *stream_impl;
+            std::shared_ptr<base_save> stream_impl;
 
             if (outer_streams.count(type)>0) {
                 stream_impl = outer_streams.at(type);
@@ -300,7 +299,7 @@ namespace ugcs {
             // set is_outer_streams_active flag
             bool is_anyone_running = false;
             for (auto iter=this->outer_streams.begin(); iter!=this->outer_streams.end(); ++iter) {
-                base_save *os = iter->second;
+                std::shared_ptr<base_save> os = iter->second;
                 if (os->outer_stream_state == VSTR_OST_STATE_RUNNING ||
                     os->outer_stream_state == VSTR_OST_STATE_PENDING) {
                         is_anyone_running = true;
@@ -312,6 +311,7 @@ namespace ugcs {
             return res;
         }
 
+
         void video_device::stop_recording() {
             if (this->is_recording_active) {
                 // stop record session
@@ -319,12 +319,22 @@ namespace ugcs {
                 // clear file name
                 this->recording_video_id = "";
                 // clear duration
-                this->recording_first_timestamp = -1;
-                this->recording_current_timestamp = -1;
-
-                this->file_save_impl->close();
+                //this->recording_first_timestamp = -1;
+                //this->recording_current_timestamp = -1;
+                if (file_save_impl) {
+                    this->file_save_impl->close();
+                }
             }
         }
+
+
+        int64_t video_device::get_recording_duration() {
+            if (file_save_impl) {
+                return file_save_impl->get_recording_duration();
+            }
+            return 0;
+        }
+
 
     }
 }

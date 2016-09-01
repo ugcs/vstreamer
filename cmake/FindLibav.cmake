@@ -50,12 +50,13 @@ ELSE (CMAKE_VERSION VERSION_GREATER 2.8.7)
 ENDIF (CMAKE_VERSION VERSION_GREATER 2.8.7)
 
 FIND_PATH (LIBAV_ROOT_DIR
-  NAMES include/libavcodec/avcodec.h
-        include/libavdevice/avdevice.h
-        include/libavfilter/avfilter.h
-        include/libavutil/avutil.h
-        include/libswscale/swscale.h
-  PATHS ENV PATH 
+  NAMES libavcodec/avcodec.h
+        libavdevice/avdevice.h
+        libavfilter/avfilter.h
+        libavutil/avutil.h
+        libswscale/swscale.h
+  PATHS ENV PATH  
+  PATH_SUFFIXES include
   DOC "LibAV root directory")
 
 FIND_PATH (LIBAV_INCLUDE_DIR

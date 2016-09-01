@@ -29,6 +29,8 @@
 #include "ugcs/vstreamer/http_generic_server.h"
 #include "ugcs/vstreamer/video.h"
 
+#define TIME_TO_CONTINUE_CAPTURING_MS 10000
+
 namespace ugcs{
 	namespace vstreamer {
 	
@@ -111,6 +113,8 @@ namespace ugcs{
 			std::mutex video_mutex_;
             /** timestamp when last frame was recieved (for timeout detection) */
             int64_t last_frame_time;
+			/** timestamp when last client connection was taken place */
+			int64_t last_connection_time;
 
             /** @brief loop for video capturing */
 			void video();

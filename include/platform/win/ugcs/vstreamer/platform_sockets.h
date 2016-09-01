@@ -62,6 +62,8 @@ typedef SOCKET Socket_handle; /* Win */
 // Only linux build sets SEND_FLAGS to nonzero.
 const int SEND_FLAGS = 0;
 
+
+
 }// namespace platform
 }
 }

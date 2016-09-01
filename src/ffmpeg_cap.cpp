@@ -15,9 +15,23 @@ namespace ugcs {
 
 
         ffmpeg_cap::ffmpeg_cap() {
-            prev_dts = -1;
-            first_frame_dts = -1;
-            start_time = 0;
+            this->prev_dts = -1;
+            this->first_frame_dts = -1;
+            this->start_time = 0;
+            this->buffer = NULL;
+            this->videoStream = -1;
+            this->res = -1;
+            this->format_context_initialized = false;
+            this->is_closing = false;
+
+// on avlibcodec 54 and 53 (linux) we cannot create MJPEG encoder for pix_fmt=AV_PIX_FMT_YUV420P, so
+// we need to use AV_PIX_FMT_YUVJ420P. But in versions 55+ this format is deprecated. So on, in version
+// 56.1.0 (Ubuntu 14.10) we need use AV_PIX_FMT_YUVJ420P again.
+#if ((LIBAVCODEC_VERSION_INT >= ((55<<16)+(0<<8)+0)) && (LIBAVCODEC_VERSION_INT < ((56<<16)+(1<<8)+0)))
+            this->pEncodedFormat = AV_PIX_FMT_YUV420P; //AV_PIX_FMT_YUVJ420P;
+#else
+            this->pEncodedFormat = AV_PIX_FMT_YUVJ420P; //AV_PIX_FMT_YUVJ420P;
+#endif
 
         }
 
@@ -34,13 +48,13 @@ namespace ugcs {
             avcodec_register_all();
             avformat_network_init();
 
-            AVFormatContext* format_context = avformat_alloc_context();
-            AVInputFormat *fmt = NULL;
+            AVFormatContext* check_format_context = avformat_alloc_context();
+            AVInputFormat *check_fmt = NULL;
 
             std::string filenameSrc;
             if (video_device_->type == DEV_CAMERA) {
                 filenameSrc = DEVICE_FFMPEG_NAME_PREFIX + video_device_->name;
-                fmt = av_find_input_format(DEVICES_INPUT_FORMAT);
+                check_fmt = av_find_input_format(DEVICES_INPUT_FORMAT);
             }
             else if (video_device_->type == DEV_STREAM || video_device_->type == DEV_FILE) {
                 filenameSrc = video_device_->url;
@@ -50,13 +64,14 @@ namespace ugcs {
                 return false;
             }
 
-            int err = avformat_open_input(&format_context, filenameSrc.c_str(), fmt, NULL);
+            int err = avformat_open_input(&check_format_context, filenameSrc.c_str(), check_fmt, NULL);
+            //int err = avformat_open_input(&check_format_context, filenameSrc.c_str(), NULL, NULL);
             if (err != 0) {
                 // cannot open device
                 LOG_DEBUG("FFMPEG.check: Cannot open device %s. Error code: %d", filenameSrc.c_str(), err);
                 return false;
             }
-            avformat_close_input(&format_context);
+            avformat_close_input(&check_format_context);
 
             LOG("FFMPEG.check: Device %s is found", video_device_->name.c_str());
 
@@ -65,32 +80,32 @@ namespace ugcs {
 
 
         bool ffmpeg_cap::open(video_device* video_device_) {
+            format_context_initialized = false;
+
+            LOG_DEBUG("Video Device (%s):  FfmpegCap. Opening video device.", video_device_->name.c_str());
 
             if (open_cap_mutex.try_lock()) {
                 open_cap_mutex.unlock();
             } else {
+                LOG_DEBUG("Video Device (%s):  FfmpegCap. Fail. Opening already.", video_device_->name.c_str());
                 VS_WAIT(100);
                 return false;
             }
             std::lock_guard<std::mutex> lock(open_cap_mutex);
 
+            LOG_DEBUG("Video Device (%s):  FfmpegCap. Registering ffmpeg modules.", video_device_->name.c_str());
             // register all ffmpeg modules
             av_register_all();
             avdevice_register_all();
             avcodec_register_all();
             avformat_network_init();
+            LOG_DEBUG("Video Device (%s):  FfmpegCap. Ffmpeg modules refistered successfully.", video_device_->name.c_str());
 
             format_context = avformat_alloc_context();
-            fmt = NULL;
+            format_context_initialized = true;
 
-// on avlibcodec 54 and 53 (linux) we cannot create MJPEG encoder for pix_fmt=AV_PIX_FMT_YUV420P, so
-// we need to use AV_PIX_FMT_YUVJ420P. But in versions 55+ this format is deprecated. So on, in version
-// 56.1.0 (Ubuntu 14.10) we need use AV_PIX_FMT_YUVJ420P again.
-#if ((LIBAVCODEC_VERSION_INT >= ((55<<16)+(0<<8)+0)) && (LIBAVCODEC_VERSION_INT < ((56<<16)+(1<<8)+0)))
-            pEncodedFormat = AV_PIX_FMT_YUV420P; //AV_PIX_FMT_YUVJ420P;
-#else
-            pEncodedFormat = AV_PIX_FMT_YUVJ420P; //AV_PIX_FMT_YUVJ420P;
-#endif
+
+            fmt = NULL;
 
             //video_device_->video_cap_opened = false;
 
@@ -154,6 +169,7 @@ namespace ugcs {
 
                 // try to open input
                 int err = avformat_open_input(&format_context, filenameSrc.c_str(), fmt, NULL);
+                //int err = avformat_open_input(&format_context, filenameSrc.c_str(), NULL, NULL);
                 if (err != 0) {
                     LOG_ERR("Video Device (%s): Unable to open input device or stream!\n", video_device_->name.c_str());
                     video_device_->video_cap_opened = false;
@@ -164,11 +180,13 @@ namespace ugcs {
                 avformat_find_stream_info(format_context, 0);
 
 
+
                 // search for video stream
                 videoStream = -1;
                 for (int i = 0; i < format_context->nb_streams; i++) {
 
                     av_dump_format(format_context, i, filenameSrc.c_str(), 0);
+
                     if (format_context->streams[i]->codec->coder_type == AVMEDIA_TYPE_VIDEO) {
                         videoStream = i;
                         break;
@@ -231,6 +249,9 @@ namespace ugcs {
                 // Ok then. Init is done.
                 video_device_->video_cap_opened = true;
             }
+
+            LOG_DEBUG("Video Device (%s):  FfmpegCap. Video device is opened.", video_device_->name.c_str());
+
             return true;
         }
 
@@ -329,9 +350,9 @@ namespace ugcs {
                 bool is_ok = true;
                 int err_count = 0;
 
+
                 // capturing loop
                 while (is_ok) {
-
                     if (err_count > MAX_ERROR_NUMBER_GET_FRAME) {
                         LOG_ERR("Video Device (%s): Errors count exceed maximum. Closing cap. \n", video_device_->name.c_str());
                         is_ok = false;
@@ -347,9 +368,10 @@ namespace ugcs {
                     if (video_device_->type == DEV_FILE) {
                         if (first_frame_dts < 0) {
                             res = av_read_frame(format_context, &packet);
-                            if (res < 0) { return false; }
+                            if (res < 0) {
+                                return false; }
                             first_frame_dts = packet.dts;
-                            start_time = utils::getMicroseconds();
+                            start_time = video_device_->playback_request_ts;
                             av_free_packet(&packet);
                         }
 
@@ -370,8 +392,8 @@ namespace ugcs {
                     }
 
                     if (res >= 0) {
-                        if (packet.stream_index == videoStream) {
 
+                        if (packet.stream_index == videoStream) {
                             if (video_device_->type == DEV_FILE) {
                                 // for file playback simply copy packet to buffer without encoding
                                 video_frame *vf;
@@ -391,14 +413,20 @@ namespace ugcs {
                                 av_free_packet(&packet);
                                 return true;
                             }
-
                             // for stream or camera do encoding
                             if (video_device_->type == DEV_STREAM || video_device_->type == DEV_CAMERA) {
                                 // decode packet into frame
-                                avcodec_decode_video2(codec_context, frame, &frameFinished, &packet);
 
-                                if (frameFinished) {
+                                int frameFinished = 0;
+                                res = avcodec_decode_video2(codec_context, frame, &frameFinished, &packet);
 
+                                if (res<0) {
+                                    av_free_packet(&packet);
+                                    err_count++;
+                                    continue;
+                                }
+
+                                if (frameFinished > 0) {
                                     // convert input frame into output frame
                                     struct SwsContext *img_convert_ctx;
                                     img_convert_ctx = sws_getCachedContext(NULL, codec_context->width,
@@ -479,8 +507,15 @@ namespace ugcs {
                                     // clear up
                                     sws_freeContext(img_convert_ctx);
                                 }
+
                                 av_free_packet(&packet);
-                                return true;
+
+                                if (frameFinished) {
+                                    return true;
+                                } else {
+                                    //err_count++;
+                                }
+
                             }
                         }
                     }
@@ -496,28 +531,85 @@ namespace ugcs {
                             return false;
                         }
                     }
-            }
+                }
 
             if (video_device_->video_cap_opened) {
+                LOG_ERR("Video Device (%s): Video loop. Closing video capturing.\n", video_device_->name.c_str());
                 video_device_->video_cap_opened = false;
                 close();
             }
-
             return false;
         }
 
 
         void ffmpeg_cap::close() {
+
+
+
+            LOG_DEBUG("Video Device: Close().\n");
+
+            if (is_closing) {
+                LOG_DEBUG("Video Device: Already closing().\n");
+                return;
+            }
+
+            this->is_closing = true;
+
+            LOG_DEBUG("Video Device: Closing. Free packet.\n");
             if (packet.pts != 0) {
                 av_free_packet(&packet);
             }
-            avcodec_close(codec_context);
-            avcodec_close(mjpeg_codec_context);
-            avcodec_close(flv_codec_context);
-            av_free(frame);
-            av_free(frame_encoded);
-            av_free(buffer);
-            avformat_close_input(&format_context);
+
+            LOG_DEBUG("Video Device: Closing. Free input codec_context.\n");
+            if (codec_context != NULL) {
+                if (avcodec_is_open(codec_context)) {
+                    avcodec_close(codec_context);
+                }
+            }
+
+            LOG_DEBUG("Video Device: Closing. Free mjpeg_codec_context.\n");
+            if (mjpeg_codec_context != NULL) {
+                if (avcodec_is_open(mjpeg_codec_context)) {
+                    avcodec_close(mjpeg_codec_context);
+                }
+            }
+
+            LOG_DEBUG("Video Device: Closing. Free flv_codec_context.\n");
+            if (flv_codec_context != NULL) {
+                if (avcodec_is_open(flv_codec_context)) {
+                    avcodec_close(flv_codec_context);
+                }
+            }
+
+            LOG_DEBUG("Video Device: Closing. Free frames.\n");
+            ffmpeg_utils::frame_free(&frame);
+
+            LOG_DEBUG("Video Device: Closing. Free encoded frames.\n");
+            ffmpeg_utils::frame_free(&frame_encoded);
+
+            LOG_DEBUG("Video Device: Closing. Free buffer.\n");
+            if (this->buffer) {
+                av_free(buffer);
+                this->buffer = NULL;
+            } else {
+                LOG_DEBUG("Video Device: Closing. Buffer is NULL.\n");
+            }
+
+            LOG_DEBUG("Video Device: Closing. Free format context.\n");
+            if (format_context_initialized) {
+                LOG_DEBUG("Video Device: Closing. Format context was initialized. Closing format context.\n");
+                format_context_initialized = false;
+                if (format_context) {
+                    LOG_DEBUG("Video Device: Closing. Format context is not NULL. Closing format context.\n");
+                    avformat_close_input(&format_context);
+                    format_context = NULL;
+                }
+            }
+
+            this->is_closing = false;
+
+            LOG_DEBUG("Video Device: Closed. \n");
+
         }
 
 

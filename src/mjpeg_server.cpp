@@ -13,7 +13,9 @@ namespace ugcs {
 	namespace vstreamer {
 
 		MjpegServer::MjpegServer(int port, video_device* vd) : HttpGenericServer(port) {
-            init(vd);
+			this->started = false;
+			this->last_frame_time = 0;
+			init(vd);
 		}
 
 		MjpegServer::~MjpegServer() {
@@ -23,11 +25,15 @@ namespace ugcs {
 		}
 
         void MjpegServer::init(video_device* vd) {
-            video_device_ = vd;
-            connections_number = 0;
-            encoded_buffer = NULL;
-            encoded_buffer_size = 0;
+            this->video_device_ = vd;
+			this->connections_number = 0;
+			this->encoded_buffer = NULL;
+			this->encoded_buffer_size = 0;
+			this->last_connection_time = 0;
+
+
 			vd->port = this->port_;
+
         }
 
 
@@ -54,6 +60,13 @@ namespace ugcs {
 			}
 
 			while (!stop_requested_) {
+
+				// wait until capturing starts
+				if(!video_device_->video_cap_opened) {
+					VS_WAIT(100);
+					continue;
+				}
+
 				/* wait for fresh frames */
 				std::unique_lock<std::mutex> lock(video_mutex_);
 				video_condition_.wait(lock);
@@ -70,7 +83,6 @@ namespace ugcs {
 					frame = tmp;
 				}
 				memcpy(frame, encoded_buffer, (size_t) encoded_buffer_size);
-
 				timestamp = (double)utils::getMilliseconds() / 1000;
 				// print the individual mimetype and the length
 				// sending the content-length fixes random stream disruption observed
@@ -81,12 +93,15 @@ namespace ugcs {
 					"\r\n", encoded_buffer_size, timestamp);
 				if (send(fd, buffer, strlen(buffer), 0) < 0) { break; }
 
-				if (send(fd, reinterpret_cast <const char*>(frame), encoded_buffer_size, 0) < 0) { break; }
+				if (frame) {
+					if (send(fd, reinterpret_cast <const char *>(frame), encoded_buffer_size, 0) < 0) { break; }
+				}
+				else {
+					break;
+				}
 
 				sprintf(buffer, "\r\n--boundarydonotcross \r\n");
-
 				if (send(fd, buffer, strlen(buffer), 0) < 0) { break; }
-
 			}
 			free(frame);
 		}
@@ -94,6 +109,7 @@ namespace ugcs {
 
 		void MjpegServer::client(sockets::Socket_handle& fd) {
 			connections_number++;
+			last_connection_time = utils::getMilliseconds();
 			LOG("MjpegServer (%d): HTTP client (%d) connected. Current number of clients: %d", port_, fd, connections_number);
 			
 			// start to send video stream to client
@@ -158,6 +174,7 @@ namespace ugcs {
 
             bool res;
 
+
 			while (!stop_requested_) {
                 if (connections_number == 0	&& !video_device_->is_recording_active && !video_device_->is_outer_streams_active) {
                     // set first value for frame time even we haven't any frames yet.
@@ -165,11 +182,10 @@ namespace ugcs {
                     last_frame_time = utils::getMilliseconds();
                 }
 				// try to capture only if there are connections
-				if (connections_number > 0 || video_device_->is_recording_active || video_device_->is_outer_streams_active) {
+				if (connections_number > 0 || video_device_->is_recording_active || video_device_->is_outer_streams_active || (utils::getMilliseconds() - last_connection_time) < TIME_TO_CONTINUE_CAPTURING_MS ) {
 
 					// init capture sequence. Skip if already capturing.
 					if (!video_device_->video_cap_opened) {
-
 						//VS_WAIT(1000);
                         LOG_DEBUG("MjpegServer (%d): Start opening", port_);
                         res = video_device_->open();
@@ -178,14 +194,13 @@ namespace ugcs {
                         }
 						// Ok then. Init is done.
                   		video_device_->video_cap_opened = true;
-
-                        // Set no_connection_time to zero;
+					    // Set no_connection_time to zero;
 						LOG_INFO("MjpegServer (%d): Start capturing, connections number = %d, recording is %s", port_, connections_number, (video_device_->is_recording_active ? "on" : "off"));
+
 					}
 
-			        res = video_device_->get_frame(&encoded_buffer, encoded_buffer_size);
-
-					if (res >= 0) {
+					res = video_device_->get_frame(&encoded_buffer, encoded_buffer_size);
+					if (res) {
                         // set frame time
                         last_frame_time = utils::getMilliseconds();
 
@@ -196,7 +211,7 @@ namespace ugcs {
 					else {
 						// something wrong happend while capturing
 						// free all resources, turn off cap and try again
-						LOG_INFO("MjpegServer (%d): Something wrong happend while capturing. Error Code: %d. Retry!", port_, res);
+						LOG_INFO("MjpegServer (%d): Something wrong happend while capturing. Error Code: %d.", port_, res);
                         video_device_->close();
                         video_device_->video_cap_opened = false;
 					}
@@ -209,7 +224,7 @@ namespace ugcs {
 					}
 					video_device_->video_cap_opened = false;
 					// wait a second before check number of connections
-					VS_WAIT(1000);
+					VS_WAIT(500);
 				}
 			}
             if (video_device_->video_cap_opened) {

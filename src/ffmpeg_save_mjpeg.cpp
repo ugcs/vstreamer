@@ -7,6 +7,7 @@
 */
 
 
+#include <ugcs/vstreamer/common.h>
 #include "ugcs/vstreamer/ffmpeg_save_mjpeg.h"
 
 namespace ugcs {
@@ -16,16 +17,36 @@ namespace ugcs {
 
         ffmpeg_save_mjpeg::ffmpeg_save_mjpeg() {
             frame = new video_frame();
-            request_ts = -1;
+            this->request_ts = -1;
+            this->is_initialized = false;
+            this->is_running = false;
+            this->type = -1;
+            this->mjpeg_format_context = NULL;
+            this->mjpeg_fmt = NULL;
+            this->mjpeg_stream = NULL;
+            this->mjpeg_codec = NULL;
+            this->mjpeg_codec_context = NULL;
+            this->first_frame_ts = 0;
+
+            // on avlibcodec 54 and 53 (linux) we cannot create MJPEG encoder for pix_fmt=AV_PIX_FMT_YUV420P, so
+            // we need to use AV_PIX_FMT_YUVJ420P. But in versions 55+ this format is deprecated. So on, in version
+            // 56.1.0 (Ubuntu 14.10) we need use AV_PIX_FMT_YUVJ420P again.
+#if ((LIBAVCODEC_VERSION_INT >= ((55<<16)+(0<<8)+0)) && (LIBAVCODEC_VERSION_INT < ((56<<16)+(1<<8)+0)))
+            pEncodedFormat = AV_PIX_FMT_YUV420P; //AV_PIX_FMT_YUVJ420P;
+#else
+            pEncodedFormat = AV_PIX_FMT_YUVJ420P; //AV_PIX_FMT_YUVJ420P;
+#endif
+
         }
 
         ffmpeg_save_mjpeg::~ffmpeg_save_mjpeg() {
-
+            this->close();
         }
+
 
         bool ffmpeg_save_mjpeg::set_filename(std::string folder, std::string filename, int type) {
             if (type == VSTR_SAVE_FILE) {
-                output_filename = utils::createFullFilename(folder, filename, VSTR_RECORDING_VIDEO_EXTENSION);
+                this->output_filename = utils::createFullFilename(folder, filename, VSTR_RECORDING_VIDEO_EXTENSION);
             } else if (type == VSTR_SAVE_USTREAM) {
                 //VSTR_SAVE_USTREAM and others are not implemented
                 return false;
@@ -46,15 +67,6 @@ namespace ugcs {
             avcodec_register_all();
             avformat_network_init();
 
-            // on avlibcodec 54 and 53 (linux) we cannot create MJPEG encoder for pix_fmt=AV_PIX_FMT_YUV420P, so
-            // we need to use AV_PIX_FMT_YUVJ420P. But in versions 55+ this format is deprecated. So on, in version
-            // 56.1.0 (Ubuntu 14.10) we need use AV_PIX_FMT_YUVJ420P again.
-#if ((LIBAVCODEC_VERSION_INT >= ((55<<16)+(0<<8)+0)) && (LIBAVCODEC_VERSION_INT < ((56<<16)+(1<<8)+0)))
-            pEncodedFormat = AV_PIX_FMT_YUV420P; //AV_PIX_FMT_YUVJ420P;
-#else
-            pEncodedFormat = AV_PIX_FMT_YUVJ420P; //AV_PIX_FMT_YUVJ420P;
-#endif
-
             bool res;
             res = this->set_filename(folder, session_name, type);
             if (!res) {
@@ -62,17 +74,19 @@ namespace ugcs {
             }
 
             // init mjpeg
-            LOG_DEBUG("MJPEG Initiation...");
+            LOG_DEBUG("MJPEG Initiation for saving process (%s)", this->output_filename.c_str());
             res = init_mjpeg(session_name, width, height);
             if (!res) {
                 return false;
             }
-            LOG_DEBUG("Init done! Starting saving process.");
+            LOG_DEBUG("MJPEG init done! Starting saving process (%s)", this->output_filename.c_str());
 
             std::thread t(&ffmpeg_save_mjpeg::run, this);
             t.detach();
 
-            LOG_DEBUG("Saving process started");
+            LOG_DEBUG("Saving process is started (%s)", this->output_filename.c_str());
+
+            this->is_initialized = true;
 
             return true;
         }
@@ -89,10 +103,17 @@ namespace ugcs {
             this->is_running = true;
             while (this->is_running) {
                 std::unique_lock<std::mutex> lock(this->frame->video_mutex_);
+                // notification will come from video_device when new frame appears.
                 this->frame->video_condition_.wait(lock);
-                this->save_frame();
+                if (this->is_running) {
+                    this->save_frame();
+                }
             }
             this->metadata_file.close();
+            VS_WAIT(500);
+            // notify everybody about finishing run-loop
+            this->stopping_condition_.notify_all();
+
         }
 
 
@@ -179,8 +200,6 @@ namespace ugcs {
         }
 
 
-
-
         bool ffmpeg_save_mjpeg::save_frame() {
 
 #if (LIBAVCODEC_VERSION_MAJOR >= 54)
@@ -196,8 +215,8 @@ namespace ugcs {
                 // with current ts. Else if frame is far from request time - let's create dummy first frame
                 // with request ts.
                 if (frame->ts - request_ts < DUMMY_FRAME_MAXIMUM_LAG_TIME) {
-                    t_mjpg_packet->dts = request_ts;
-                    t_mjpg_packet->pts = request_ts;
+                    t_mjpg_packet->dts = 0;
+                    t_mjpg_packet->pts = 0;
                     t_mjpg_packet->flags = 1;
                     av_write_frame (mjpeg_format_context, t_mjpg_packet);
                 } else {
@@ -206,25 +225,24 @@ namespace ugcs {
                 first_frame_ts = request_ts;
             }
 
-            t_mjpg_packet->dts = frame->ts;
-            t_mjpg_packet->pts = frame->ts;
+            t_mjpg_packet->dts = frame->ts - first_frame_ts;
+            t_mjpg_packet->pts = frame->ts - first_frame_ts;
             t_mjpg_packet->flags = 1;
 
             av_write_frame (mjpeg_format_context, t_mjpg_packet);
             t_mjpg_packet->size=0;
             t_mjpg_packet->data=NULL;
-            delete[] t_mjpg_packet;
+            delete t_mjpg_packet;
 
              // save duration
             metadata_file.seekg(0, std::ios::beg);
-            metadata_file << (frame->ts-first_frame_ts);
+            metadata_file << this->get_recording_duration();
 
             return true;
 #else
             return false;
 #endif
         }
-
 
 
         bool ffmpeg_save_mjpeg::save_dummy_frame(int64_t ts) {
@@ -241,7 +259,7 @@ namespace ugcs {
             black_frame->height = height;
             black_frame->width = width;
             black_frame->format = mjpeg_codec_context->pix_fmt;
-            black_frame->pts = ts;
+            black_frame->pts = 0;
 
             int res = av_image_alloc(black_frame->data, black_frame->linesize, width, height, pEncodedFormat, 16);
 
@@ -273,8 +291,8 @@ namespace ugcs {
                 return false;
             }
 
-            t_mjpg_packet.dts = ts;
-            t_mjpg_packet.pts = ts;
+            t_mjpg_packet.dts = 0;
+            t_mjpg_packet.pts = 0;
             t_mjpg_packet.flags = 1;
             av_write_frame (mjpeg_format_context, &t_mjpg_packet);
             av_free_packet(&t_mjpg_packet);
@@ -286,6 +304,7 @@ namespace ugcs {
 #endif
 
         }
+
 
         void ffmpeg_save_mjpeg::create_synth_black_frame(AVFrame *frame, int height, int width) {
             /* Y */
@@ -305,17 +324,49 @@ namespace ugcs {
         }
 
 
-
         void ffmpeg_save_mjpeg::close(){
-            this->is_running = false;
+            LOG_INFO("Stopping video recording process (%s)", this->output_filename.c_str());
+            if (this->is_running) {
+                //stop waiting in run-loop without saving frame
 
-            avcodec_close(mjpeg_codec_context);
-            avformat_close_input(&mjpeg_format_context);
+                this->is_running = false;
+                this->frame->video_condition_.notify_all();
+
+                LOG_INFO("Stopping video recording process, close files (%s)", this->output_filename.c_str());
+                // wait until run-loop stop
+                std::unique_lock<std::mutex> lock(this->stopping_mutex_);
+                // notification will come from video_device when run-loop stops
+                this->stopping_condition_.wait(lock);
+            } else {
+                LOG_INFO("Stopping video recording process, recording is not active (%s)", this->output_filename.c_str());
+            }
+
+            if (this->is_initialized) {
+                LOG_INFO("Stopping video recording process, free codec resources (%s)", this->output_filename.c_str());
+                // free ffmpeg resources
+                av_write_trailer(mjpeg_format_context);
+
+                avcodec_close(mjpeg_codec_context);
+                avformat_close_input(&mjpeg_format_context);
+                this->is_initialized = false;
+
+            } else {
+                LOG_INFO("Video recording process (%s) has not been initialized", this->output_filename.c_str());
+            }
+            LOG_INFO("Video recording process (%s) is succesfully stopped", this->output_filename.c_str());
         }
+
+
+        int64_t ffmpeg_save_mjpeg::get_recording_duration() {
+            return this->frame->ts - this->first_frame_ts;
+        }
+
 
         void ffmpeg_save_mjpeg::set_outer_stream_state(outer_stream_state_enum state, std::string msg, outer_stream_error_enum error_code) {
            // not impl
         }
+
+
 
     }
 }

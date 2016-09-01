@@ -30,6 +30,11 @@ namespace ugcs {
           */
             AVFrame* frame_alloc();
 
+           /**
+           * @brief frame allocation for various ffmpeg version
+           */
+            void frame_free(AVFrame **frame);
+
             /**
             * @brief createing AVPacket from data азк various ffmpeg versions
             */

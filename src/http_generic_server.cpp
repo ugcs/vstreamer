@@ -40,6 +40,7 @@ namespace vstreamer {
 		char name[NI_MAXHOST];
 
 		memset(&hints, '\0', sizeof(hints));
+		//todo: change to INET
 		hints.ai_family = PF_UNSPEC;
 		hints.ai_flags = AI_PASSIVE;
 		hints.ai_socktype = SOCK_STREAM;
@@ -84,7 +85,7 @@ namespace vstreamer {
 			}
 
 			if (bind(sd[i], aip2->ai_addr, aip2->ai_addrlen) < 0) {
-				LOG_ERROR("HttpServer (%d): bind error ", port_);
+				LOG_ERROR("HttpServer (%d): bind error, %d, error: %d ", port_, sd[i], sockets::get_error());
 				sd[i] = (sockets::Socket_handle) -1;
 				continue;
 			}
@@ -140,29 +141,32 @@ namespace vstreamer {
 			LOG("HttpServer (%d): Client connected ", port_);
 
 			for (i = 0; i < max_fds + 1; i++) {
-				if (sd[i] != -1 && FD_ISSET(sd[i], &selectfds)) {
-					sockets::Socket_handle fd = accept(sd[i], (struct sockaddr *) &client_addr,
-						&addr_len);
-					if (sockets::Disable_sigpipe(fd) < 0) {
-						LOG_ERROR("HttpServer (%d): set nonblocking fd failed ", port_);
+				if (i<MAX_NUM_SOCKETS) {
+					if (sd[i] != -1 && FD_ISSET(sd[i], &selectfds)) {
+						sockets::Socket_handle fd = accept(sd[i], (struct sockaddr *) &client_addr,
+														   &addr_len);
+						if (sockets::Disable_sigpipe(fd) < 0) {
+							LOG_ERROR("HttpServer (%d): set nonblocking fd failed ", port_);
+						}
+						/* start new thread that will handle this TCP connected client */
+
+						if (getnameinfo((struct sockaddr *) &client_addr, addr_len,
+										name, sizeof(name), NULL, 0, NI_NUMERICHOST) == 0) {
+							LOG("HttpServer (%d): Serving client %s", port_, name);
+						}
+						if (fd == -1) {
+							sd[i] = (sockets::Socket_handle) -1;
+							break;
+						}
+						std::thread trr(std::bind(&HttpGenericServer::client, this, fd));
+						trr.detach();
 					}
-					/* start new thread that will handle this TCP connected client */
-		
-					if (getnameinfo((struct sockaddr *) &client_addr, addr_len,
-						name, sizeof(name), NULL, 0, NI_NUMERICHOST) == 0) {
-						LOG("HttpServer (%d): Serving client %s", port_, name);
-					}
-                    if (fd==-1) {
-                        sd[i]= (sockets::Socket_handle) -1;
-                        break;
-                    }
-					std::thread trr(std::bind(&HttpGenericServer::client, this, fd));
-					trr.detach();
 				}
 			}
 		}
 
 		LOG("HttpServer (%d): Leaving server thread, calling cleanup function now", port_);
+		freeaddrinfo(aip);
 		cleanUp();
 	}
 

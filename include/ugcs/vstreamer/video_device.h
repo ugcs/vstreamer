@@ -18,6 +18,7 @@
 #include <string>
 #include <iostream>
 #include <sstream>
+#include <memory>
 
 
 
@@ -80,6 +81,10 @@ namespace ugcs{
             */
             bool init_video_cap();
 
+            /** @brief Inint outer streams (ustream\twitch\youtube)
+            */
+            void init_outer_streams();
+
             /** @brief Open video cap for device. If video cap is not initialised yet - it will be
             * @return true if video cap opens successfully
             */
@@ -99,7 +104,13 @@ namespace ugcs{
             */
             bool init_recording(std::string folder, std::string filename, std::string &result_msg, int64_t request_ts);
 
+            /** @brief get duration for currently recording file.
+           */
+            int64_t get_recording_duration();
+
+
             void stop_recording();
+
 
             bool set_outer_stream(outer_stream_type_enum type, std::string url, bool is_active, std::string &result_msg);
 
@@ -135,15 +146,11 @@ namespace ugcs{
             std::string last_recording_error_code;
             /** is recording session active now */
             bool is_recording_active;
-            /** first frame timestamp */
-            int64_t recording_first_timestamp;
-            /** current recording timestamp */
-            int64_t recording_current_timestamp;
 
             bool is_outer_streams_active;
             /** broadcasting streams */
-            std::map<int, base_save*> outer_streams;
-
+            std::map<int, std::shared_ptr<base_save>> outer_streams;
+            std::shared_ptr<base_save> o_stream_tmp;
             // video id for playback given from client.
             // equial to filename without path and extension.
             std::string playback_video_id;
@@ -153,6 +160,8 @@ namespace ugcs{
             double playback_speed;
             // record request timestamp for futher video sync
             int64_t record_request_ts;
+            // playback request timestamp for correct video timing
+            int64_t playback_request_ts;
 
         private:
             /** Initialisation of device */
@@ -162,7 +171,7 @@ namespace ugcs{
             /** video cap implementation */
             base_cap* cap_impl;
             /** video rec implementation */
-            base_save* file_save_impl;
+            std::shared_ptr<base_save> file_save_impl;
 
             std::map<int, video_frame*> frames;
 

@@ -47,6 +47,9 @@ Close_socket(Socket_handle);
          */
 int Send_code(sockets::Socket_handle& fd, int response_code, const char *message, std::string content_type = "text/html");
 
+
+int get_error();
+
 }
 }
 }

@@ -16,7 +16,9 @@ add_definitions( -DVIDEO_SAVE_ENABLED=1 )
 
 set(EXECUTABLE ${CMAKE_PROJECT_NAME})
 
-SET(CMAKE_BUILD_TYPE Debug)
+if (CMAKE_SYSTEM_NAME MATCHES "Darwin")
+	SET(CMAKE_BUILD_TYPE RELEASE)
+endif()
 
 SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -pthread")
 
@@ -32,6 +34,8 @@ include("configure_packaging")
 
 include("FindLibav")
 
+message("AVFormat lib: ${LIBAV_AVFORMAT_LIBRARIES}")
+
 include("vstreamer_common")
 
 
@@ -39,6 +43,13 @@ if (CMAKE_SYSTEM_NAME MATCHES "Windows")
     FIND_PACKAGE(OpenCV REQUIRED)
     add_definitions( -DOPENCV_CAP=1 )
 endif()
+
+
+if (CMAKE_SYSTEM_NAME MATCHES "Darwin")
+	exec_program(uname ARGS -r OUTPUT_VARIABLE DARWIN_VERSION)
+    MESSAGE(STATUS "DARWIN_VERSION=${DARWIN_VERSION}")
+endif()
+
 
 Find_platform_sources("." PLATFORM_INCLUDES PLATFORM_SOURCES)
 
@@ -50,9 +61,9 @@ if (NOT DEFINED VSM_SDK_DIR)
         if(CMAKE_SYSTEM_NAME MATCHES "Windows")
             set(VSM_SDK_DIR "C:/UGCS/vsm-sdk")
         elseif(CMAKE_SYSTEM_NAME MATCHES "Linux")
-            set(VSM_SDK_DIR "/opt/ugcs/vsm-sdk")
-		elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
-			set(VSM_SDK_DIR "/Applications/UgCS/vsm-sdk")
+		set(VSM_SDK_DIR "/opt/ugcs/vsm-sdk")
+	elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+	    set(VSM_SDK_DIR "/Applications/UgCS/vsm-sdk")
         endif()
     endif()
 endif()
@@ -78,13 +89,40 @@ Build_vsm_config(${CMAKE_SOURCE_DIR}/vsm.conf)
 #file(GLOB SOURCES "*.cpp" "*.h")
 
 if (CMAKE_SYSTEM_NAME MATCHES "Darwin")
+
+    #10.9.2 - 10.9.5
+	if (DARWIN_VERSION MATCHES "13.1.0" OR DARWIN_VERSION MATCHES "13.2.0" OR DARWIN_VERSION MATCHES "13.3.0" OR DARWIN_VERSION MATCHES "13.4.0")
 	
-	FILE(COPY	"/System/Library/Frameworks/IOKit.framework/Headers/usb/USB.h"
-				DESTINATION "${CMAKE_BINARY_DIR}/include/IOKit/usb"
-				NO_SOURCE_PERMISSIONS)
-	SET(ENV{LC_TYPE} "C")
-	SET(ENV{LANG} "C")
-	execute_process(COMMAND sed -i "" "s/#pragma options align=reset/#pragma pack()/g" ${CMAKE_BINARY_DIR}/include/IOKit/usb/USB.h)
+		FILE(COPY	"/System/Library/Frameworks/IOKit.framework/Headers/usb/USB.h"
+					DESTINATION "${CMAKE_BINARY_DIR}/include/IOKit/usb"
+					NO_SOURCE_PERMISSIONS)
+		SET(ENV{LC_TYPE} "C")
+		SET(ENV{LANG} "C")
+		execute_process(COMMAND sed -i "" "s/#pragma options align=reset/#pragma pack()/g" ${CMAKE_BINARY_DIR}/include/IOKit/usb/USB.h)
+	endif()
+	
+	
+	#10.10.4
+	if (DARWIN_VERSION MATCHES "14.4.0")
+	
+	
+	   FILE(COPY "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.10.sdk/System/Library/Frameworks/IOKit.framework/Headers/usb/USB.h"
+                                DESTINATION "${CMAKE_BINARY_DIR}/include/IOKit/usb"
+                                NO_SOURCE_PERMISSIONS)
+
+
+        FILE(COPY "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.10.sdk/usr/include/dispatch/object.h"
+                                DESTINATION  "${CMAKE_BINARY_DIR}/include/dispatch"
+                                NO_SOURCE_PERMISSIONS)
+
+
+        SET(ENV{LC_TYPE} "C")
+        SET(ENV{LANG} "C")
+        execute_process(COMMAND sed -i "" "s/#pragma options align=reset/#pragma pack()/g" ${CMAKE_BINARY_DIR}/include/IOKit/usb/USB.h)
+        execute_process(COMMAND sed -i "" "s/typedef void (^dispatch_block_t)(void)/typedef void* dispatch_block_t/g" ${CMAKE_BINARY_DIR}/include/dispatch/object.h)
+	endif()
+
+	
 endif()
 
 include_directories(
@@ -110,6 +148,7 @@ set(SOURCES ${SOURCES}  ${PLATFORM_SOURCES} )
 add_executable(${EXECUTABLE} ${SOURCES})
 
 
+message(">>>>>> ${LIBAV_AVFORMAT_LIBRARIES}")
 ## Specify libraries to link a library or executable target against
 #TARGET_LINK_LIBRARIES(vstreamer ${OpenCV_LIBS}) 
 TARGET_LINK_LIBRARIES(${EXECUTABLE} ${VSM_LIBS}) 
@@ -119,7 +158,7 @@ TARGET_LINK_LIBRARIES(${EXECUTABLE} ${LIBAV_AVDEVICE_LIBRARIES})
 TARGET_LINK_LIBRARIES(${EXECUTABLE} ${LIBAV_AVUTIL_LIBRARIES}) 
 TARGET_LINK_LIBRARIES(${EXECUTABLE} ${LIBAV_SWSCALE_LIBRARIES})
 
-message(">>>>>>>>> ${LIBAV_AVFORMAT_LIBRARIES}")
+
 
 # !!! Attention !!!
 # should also patch /System/Library/Frameworks/IOKit.framework/Headers/USB.h
@@ -141,107 +180,32 @@ endif()
 
 if (LINUX_DISTRO_VERSION VERSION_EQUAL "14.10" OR LINUX_DISTRO_VERSION VERSION_EQUAL "15.04")
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "libavdevice55, libswscale3")
+elseif(LINUX_DISTRO_VERSION VERSION_EQUAL "16.04")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libavdevice-ffmpeg56")
 else ()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "libavdevice53, libswscale2")
 endif ()
 
-function(Install_system_library TARGET_NAME LIB_NAME)
-    #get_target_property(MY_LIBFILE ${TARGET_NAME} LOCATION)
-	set(MY_LIBFILE "${CMAKE_BINARY_DIR}/${TARGET_NAME}")
-	if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
-		add_custom_command(
-				TARGET ${EXECUTABLE}
-				POST_BUILD
-				COMMAND /bin/bash "${UGCS_BUILD_SCRIPTS_DIR}/get_mac_lib_from_binary.bash" ${MY_LIBFILE} ${LIB_NAME} ${CMAKE_BINARY_DIR})
-	endif()
-
-
-	# Add library to installation
-    install(FILES "${CMAKE_BINARY_DIR}/${LIB_NAME}"
-            DESTINATION "${UGCS_INSTALL_LIB_DIR}")
-endfunction()
-
-
 configure_file("${CMAKE_SOURCE_DIR}/license.txt" "${CMAKE_BINARY_DIR}/license.txt")
 
-
 if (CMAKE_SYSTEM_NAME MATCHES "Darwin")
-	#fmpeg
-    #Install_system_library(${EXECUTABLE} "libgcc_s.1.dylib")
-    #Install_system_library(${EXECUTABLE} "libstdc++.6.dylib")
 
-	Install_system_library(${EXECUTABLE} "libavcodec.55.dylib")
-	Install_system_library(${EXECUTABLE} "libavformat.55.dylib")
-	Install_system_library(${EXECUTABLE} "libavutil.52.dylib")
-	Install_system_library(${EXECUTABLE} "libswscale.2.dylib")
-	Install_system_library(${EXECUTABLE} "libavdevice.55.dylib")
+    # Gather all target dependant libraries and patch RPATHs for libraries and executable
+    # Exclude c++ runtime libraries as those are added by stdcppruntime component
+	add_custom_command(
+	    TARGET ${EXECUTABLE}
+	    POST_BUILD
+        COMMAND /bin/bash "${UGCS_BUILD_SCRIPTS_DIR}/fixup_mac_binary_rpaths.bash" ${EXECUTABLE} "/opt/local/lib" "dylibs" "libstdc++.6.dylib" "libgcc_s.1.dylib"
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
-	Install_system_library("libavdevice.55.dylib" "libavfilter.4.dylib")
-	Install_system_library("libavdevice.55.dylib" "libpostproc.52.dylib")
-	Install_system_library("libavdevice.55.dylib" "libavresample.1.dylib")
-
-	Install_system_library("libavcodec.55.dylib" "libswresample.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libiconv.2.dylib")
-	Install_system_library("libavcodec.55.dylib" "libSDL-1.2.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libnettle.4.dylib")
-	Install_system_library("libavcodec.55.dylib" "libhogweed.2.dylib")
-	Install_system_library("libavcodec.55.dylib" "libgmp.10.dylib")
-	Install_system_library("libavcodec.55.dylib" "libx264.142.dylib")
-	Install_system_library("libavcodec.55.dylib" "libvorbisenc.2.dylib")
-	Install_system_library("libavcodec.55.dylib" "libvorbis.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libogg.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libtheoraenc.1.dylib")
-	Install_system_library("libavcodec.55.dylib" "libtheoradec.1.dylib")
-	Install_system_library("libavcodec.55.dylib" "libspeex.1.dylib")
-	Install_system_library("libavcodec.55.dylib" "libschroedinger-1.0.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libopus.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libopenjpeg.1.dylib")
-	Install_system_library("libavcodec.55.dylib" "libmp3lame.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libmodplug.1.dylib")
-	Install_system_library("libavcodec.55.dylib" "libfribidi.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libglib-2.0.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libintl.8.dylib")
-	Install_system_library("libavcodec.55.dylib" "libfreetype.6.dylib")
-	Install_system_library("libavcodec.55.dylib" "libfontconfig.1.dylib")
-	Install_system_library("libavcodec.55.dylib" "libbluray.1.dylib")
-	Install_system_library("libavcodec.55.dylib" "libass.5.dylib")
-	Install_system_library("libavcodec.55.dylib" "libgnutls.28.dylib")
-	Install_system_library("libavcodec.55.dylib" "libbz2.1.0.dylib")
-	Install_system_library("libavcodec.55.dylib" "libz.1.dylib")
-	Install_system_library("libavformat.55.dylib" "libX11.6.dylib")
-	Install_system_library("libSDL-1.2.0.dylib" "libXext.6.dylib")
-	Install_system_library("libSDL-1.2.0.dylib" "libXrandr.2.dylib")
-	Install_system_library("libSDL-1.2.0.dylib" "libXrender.1.dylib")
-	Install_system_library("libschroedinger-1.0.0.dylib" "liborc-0.4.0.dylib")
-	Install_system_library("libfreetype.6.dylib" "libpng16.16.dylib")
-	Install_system_library("libfontconfig.1.dylib" "libexpat.1.dylib")
-	Install_system_library("libbluray.1.dylib" "libxml2.2.dylib")
-	Install_system_library("libass.5.dylib" "libenca.0.dylib")
-	Install_system_library("libgnutls.28.dylib" "libp11-kit.0.dylib")
-	Install_system_library("libgnutls.28.dylib" "libtasn1.6.dylib")
-	Install_system_library("libX11.6.dylib" "libxcb.1.dylib")
-	Install_system_library("libxml2.2.dylib" "liblzma.5.dylib")
-	Install_system_library("libp11-kit.0.dylib" "libffi.6.dylib")
-	Install_system_library("libxcb.1.dylib" "libXau.6.dylib")
-	Install_system_library("libxcb.1.dylib" "libXdmcp.6.dylib")
-
-	LIST(APPEND LIB_NAME_LIST "libswscale.2.dylib" "libavcodec.55.dylib" "libavformat.55.dylib" "libavdevice.55.dylib" "libavutil.52.dylib" "libswresample.0.dylib" "libiconv.2.dylib" "libSDL-1.2.0.dylib" "libnettle.4.dylib" "libhogweed.2.dylib" "libgmp.10.dylib" "libx264.142.dylib" "libvorbisenc.2.dylib" "libvorbis.0.dylib" "libogg.0.dylib" "libtheoraenc.1.dylib" "libtheoradec.1.dylib" "libspeex.1.dylib" "libschroedinger-1.0.0.dylib" "libopus.0.dylib" "libopenjpeg.1.dylib" "libmp3lame.0.dylib" "libmodplug.1.dylib" "libfribidi.0.dylib" "libglib-2.0.0.dylib" "libintl.8.dylib" "libfreetype.6.dylib" "libfontconfig.1.dylib" "libbluray.1.dylib" "libass.5.dylib" "libgnutls.28.dylib" "libbz2.1.0.dylib" "libz.1.dylib" "libX11.6.dylib" "libavfilter.4.dylib" "libpostproc.52.dylib" "libavresample.1.dylib" "libXext.6.dylib" "libXrandr.2.dylib" "libXrender.1.dylib" "liborc-0.4.0.dylib" "libpng16.16.dylib" "libexpat.1.dylib" "libxml2.2.dylib" "libenca.0.dylib" "libp11-kit.0.dylib" "libtasn1.6.dylib" "libxcb.1.dylib" "liblzma.5.dylib" "libffi.6.dylib" "libXau.6.dylib" "libXdmcp.6.dylib")	
-
-
-    #Patch_mac_binary("${EXECUTABLE}" "libgcc_s.1.dylib")
-    #Patch_mac_binary("${EXECUTABLE}" "libstdc++.6.dylib" "libgcc_s.1.dylib")
-
-
-	FOREACH(ITEM ${LIB_NAME_LIST})
-		Patch_mac_binary("${EXECUTABLE}" ${ITEM} ${LIB_NAME_LIST})
-	ENDFOREACH()
-
-	Patch_mac_binary("${EXECUTABLE}" "${EXECUTABLE}" ${LIB_NAME_LIST})
-	
-	
+    # Install patched libraries into common lib dir.
+    install (DIRECTORY "${CMAKE_BINARY_DIR}/dylibs/"
+            DESTINATION "${UGCS_INSTALL_LIB_DIR}"
+            FILES_MATCHING PATTERN "*.dylib")
 endif()
 
 Add_install_target()
 
 #Add package target.
 include(CPack)
+

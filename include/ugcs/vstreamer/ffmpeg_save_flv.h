@@ -67,6 +67,9 @@ namespace ugcs{
             void run();
 
 
+            int64_t get_recording_duration();
+
+
             /** @brief Get current frame from given device with ffmpeg.
             *
             * @param encoded_buffer - saved frame data.

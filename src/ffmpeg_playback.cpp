@@ -13,6 +13,8 @@ namespace ugcs {
     namespace vstreamer {
 
         ffmpeg_playback::ffmpeg_playback(video_device* vd) {
+            this->stop_requested = true;
+            this->started = false;
             init(vd);
         }
 
@@ -23,10 +25,10 @@ namespace ugcs {
         }
 
         void ffmpeg_playback::init(video_device* vd) {
-            video_device_ = vd;
-            encoded_buffer = NULL;
-            encoded_buffer_size = 0;
-            last_frame_time = 0;
+            this->video_device_ = vd;
+            this->encoded_buffer = NULL;
+            this->encoded_buffer_size = 0;
+            this->last_frame_time = 0;
         }
 
 
@@ -45,11 +47,13 @@ namespace ugcs {
                     "\r\n"
                     "--boundarydonotcross \r\n", header_tmp.c_str());
 
-            if (send(fd, buffer, strlen(buffer), 0) < 0) {
+            int res_send = send(fd, buffer, strlen(buffer), 0);
+
+            if (res_send < 0) {
+                LOG_ERROR("Playback process (%s): error sending http header, error code = %d", video_device_->playback_video_id.c_str(), res_send);
                 free(frame);
                 return;
             }
-
             while (!stop_requested) {
                 /* wait for fresh frames */
                 std::unique_lock<std::mutex> lock(video_mutex_);
@@ -82,13 +86,24 @@ namespace ugcs {
                         "Content-Length: %d\r\n"
                         "X-Timestamp: %.06lf\r\n"
                         "\r\n", encoded_buffer_size, timestamp);
-                if (send(fd, buffer, strlen(buffer), 0) < 0) { break; }
+                if (send(fd, buffer, strlen(buffer), 0) < 0) {
+                    LOG_ERROR("Playback process (%s): error sending header", video_device_->playback_video_id.c_str());
+                    break; }
 
-                if (send(fd, reinterpret_cast <const char*>(frame), encoded_buffer_size, 0) < 0) { break; }
+                if (frame) {
+                    if (send(fd, reinterpret_cast <const char *>(frame), encoded_buffer_size, 0) < 0) {
+                        LOG_ERROR("Playback process (%s): error sending http body", video_device_->playback_video_id.c_str());
+                        break; }
+                } else {
+                    LOG_ERROR("Playback process (%s): error sending http body - no frame exists", video_device_->playback_video_id.c_str());
+                    break;
+                }
 
                 sprintf(buffer, "\r\n--boundarydonotcross \r\n");
 
-                if (send(fd, buffer, strlen(buffer), 0) < 0) { break; }
+                if (send(fd, buffer, strlen(buffer), 0) < 0) { break;
+                    LOG_ERROR("Playback process (%s): error sending http tail", video_device_->playback_video_id.c_str());
+                }
 
             }
             free(frame);
@@ -98,6 +113,7 @@ namespace ugcs {
         void ffmpeg_playback::start(sockets::Socket_handle& fd) {
             stop_requested = false;
             started = true;
+            LOG("Playback process (%s): starting to read file", video_device_->playback_video_id.c_str());
 
             // start file reading
             std::thread t(&ffmpeg_playback::video, this);

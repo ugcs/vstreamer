@@ -28,3 +28,8 @@ ugcs::vstreamer::sockets::Close_socket(sockets::Socket_handle s)
     
 }
 
+int
+ugcs::vstreamer::sockets::get_error() {
+    return errno;
+}
+

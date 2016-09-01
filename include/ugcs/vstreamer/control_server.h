@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include <ugcs/vsm/vsm.h>
+#include "ugcs/vsm/service_discovery_processor.h"
 
 #include <thread>
 #include <chrono>
@@ -34,6 +35,7 @@
 
 #define CONTROL_HELP_MESSAGE "<html><b>Use the following links to control streaming server</b><br><ul><li><a href=\"/streams\">Get streams info</a></li><li><a href=\"/parameters\">Get or set parameters</a></li></ul></html>"
 #define CHUNK_SIZE 64000
+#define SSDP_VIDEO_SERVICE_NT "ugcs:video"
 
 namespace ugcs{
 namespace vstreamer {
@@ -70,7 +72,12 @@ class ControlServer : HttpGenericServer {
 			 *         response options.
 			 */
 			void client(sockets::Socket_handle& fd);
-			
+
+			/**
+			 * SSDP Detection handler
+			 */
+			void SSDPDetectionHandler(std::string type, std::string name, std::string location, std::string instance_id, bool alive);
+
 		private:
 
             /** vstreamer server parametrers from vstreamer.conf*/
@@ -79,11 +86,23 @@ class ControlServer : HttpGenericServer {
             /** current maximum port of http-streamer. Next streaming serevers will be opend with next port */
 			int max_port_;
 
-            //** overall devices list: autodetected + streams + allowed - excluded */
+            /** overall devices list: autodetected + streams + allowed - excluded */
 			std::map<std::string, video_device> device_list;
 
-
+			/** http servers list. key - is device name */
 			std::map<std::string, ugcs::vstreamer::MjpegServer*> http_servers;
+
+			/** current playbacks. key - is file name */
+			std::map<std::string, ffmpeg_playback*> playbacks;
+
+			/** request processor */
+			ugcs::vsm::Request_processor::Ptr proc_context;
+
+	    	/** request worker */
+			ugcs::vsm::Request_worker::Ptr worker;
+
+			/** ssdp discoverer */
+			ugcs::vsm::Service_discovery_processor::Ptr discoverer;
 
 			/**
 			 * @brief  detect devices and runs mjpeg servers
@@ -94,16 +113,6 @@ class ControlServer : HttpGenericServer {
 			 * @brief  Get list of video devices (cameras, streams...)
 			 */
 			void scanForDevices();
-
-			/**
-			* @brief check device availability for every registered capturer (ffmpeg, opencv, etc). First working capturer
-            * will be set as device.cap_type. If any capturer is found device is added to device_list and http port is set
-            * for it.
-            *
-            * @param dev - video device to check
-			*/
-			void checkDeviceAvailability(video_device dev);
-
 
             /**
             * @brief  send help message to client
@@ -134,26 +143,51 @@ class ControlServer : HttpGenericServer {
             void writeParamsInfo(ugcs::vstreamer::sockets::Socket_handle& fd, std::string body);
 
 			/**
-            * @brief
+            * @brief  start playback request handler
             */
-			void startPlayback(ugcs::vstreamer::sockets::Socket_handle& fd, std::string query);
+			void startPlayback(ugcs::vstreamer::sockets::Socket_handle& fd, std::string query, int64_t ts_micro);
 
 			/**
-			* @brief
+			* @brief  get video metadata (duration) request handler
 			*/
 			void getVideoMetadata(ugcs::vstreamer::sockets::Socket_handle& fd, std::string video_id);
 
+			/**
+			* @brief  delete video request handler
+			*/
 			void deleteVideo(ugcs::vstreamer::sockets::Socket_handle& fd, std::string video_id);
 
+			/**
+			* @brief  download video request handler
+			*/
 			void downloadVideo(ugcs::vstreamer::sockets::Socket_handle& fd, std::string video_id);
 
-			void writeStreamInfo(ugcs::vstreamer::sockets::Socket_handle& fd, std::string body);
+			/**
+			* @brief  update stream info request handler
+			*/
+			void writeStreamInfo(ugcs::vstreamer::sockets::Socket_handle& fd, std::string body, int64_t ts_milli);
 
+			/**
+			* @brief  update broadcasting status request handler
+			*/
 			void writeOuterStreamInfo(ugcs::vstreamer::sockets::Socket_handle& fd, std::string body);
 
+			/**
+			* @brief  obtaining next port number for http server\device
+			*/
 			int find_next_port();
 
-            std::mutex broadcast_mutex;
+			/**
+			 * @brief start ssdp listener
+			 */
+			void startSSDPListener();
+
+			/**
+			* @brief stop ssdp listener and release resoucers
+			*/
+			void stopSSDPListener();
+
+			std::mutex broadcast_mutex;
 
 	    };
   

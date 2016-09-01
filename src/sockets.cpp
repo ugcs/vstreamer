@@ -47,7 +47,11 @@ int ugcs::vstreamer::sockets::Send_code(sockets::Socket_handle& fd, int response
                 "%s", header_tmp.c_str(), message);
     }
 
-    return send(fd, buffer, strlen(buffer), 0);
+    int res = send(fd, buffer, strlen(buffer), 0);
+
+    sockets::Close_socket(fd);
+
+    return res;
 
 }
 

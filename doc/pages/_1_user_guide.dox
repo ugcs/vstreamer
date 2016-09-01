@@ -1,0 +1,135 @@
+/**
+
+@page video_streaming_service_user_guide Video Streaming Service User Guide
+
+Video streaming service is used to stream the video from a vehicle or other source directly into UgCS. For the video streaming service to work correctly the user needs to configure it in the UgCS Client and also in the configuration file. To do so, please carefully read the instructions below.
+After changing the configuration you must restart the Video Service via the Service Manager. 				 
+				 
+@section video_config_client Configuration in client
+
+You can configure the video service in client “Menu” > “Configuration” > “Video”. By default it points to a local instance. In the case of a multi node deployment network address and port of the Video service can be specified.
+
+@section video_config_prop Configuration in the video-service properties file
+
+You can configure the video-service settings in a video configuration file called vstreamer.conf.  It can be found in the following paths:
+
+- <b>On Microsoft Windows:</b>
+
+		C:\Program Files\UgCS\bin\vstreamer.conf
+
+- <b>On Mac OS:</b>
+ 
+		~/Library/Application Support/UGCS/configuration/vstreamer.conf or 
+		/Users/{username}/Library/Application Support/UGCS/configuration/vstreamer.conf
+
+- <b>On GNU/Linux:</b>
+
+		/etc/opt/ugcs/vstreamer.conf
+		
+The configuration file vstreamer.conf has the following sections which will be described below: @ref main_settings, @ref network_streams_settings, @ref video_device_settings, @ref log_level, @ref log_path File, @ref log_file_max_size
+
+@subsection main_settings Main settings
+
+Parameter name        | Default value  | Description
+--------------------------|----------|---------
+vstreamer.server_port     |  8081    |  Http port for the main video service server. This server starts streaming servers for each device.  Streaming servers run on ports right next to the main server (e.g. if the main server runs on port 8081, streaming servers will run on ports 8082, 8083, etc.). <br><br> Change this value if port conflicts appear. <br><br> This port must be as specified in the settings of the video in the client  |
+
+@subsection network_streams_settings Network streams settings
+
+You can also set a number of input network streams which will be re-streamed to the client. By default the streams for ArDrone and GoPro are configured. Feel free to add, change or remove streams.
+Parameter name       | Default value  | Description
+---------------|----------|---------
+vstreamer.inputstream.#           |  -     | Example: Ardrone;tcp://192.168.1.1:5555;60;640;360 <br><br> Format description: <br><br> <Name>;<url>;<Timeout>;<Width>;<Height> <br><br> <Name>: name of stream as it will be seen in client. <br><br> <Url>: URL of input network stream <br><br> <Timeout>: Parameter is optional. Means time in seconds while http stream will keep trying to connect to stream after disconnecting and stream name will appear in list (same as timeout for video devices). <br><br> <Width> and <Height>: image size. Parameters are optional, but may be needed for some streams. <br><br>|
+
+Local *.avi file streaming from VLC is also available. You should use a custom MJPEG codec with parameters: encapsulation – M-JPEG, video codec- MJPEG, 800Kb/s, frame rate – same as source. Specify new video source in vstreamer.conf.
+
+@subsection video_device_settings Video device settings
+
+By default every video device found is available for streaming. You can change this behaviour by changing following settings:
+Parameter name       | Default value  | Description
+---------------|----------|---------
+vstreamer.videodevices.autodetect | 1 | Set audodetecting of video devices. If set to “1” every detected device will be available for streaming except those which are in device.exclude list (see below). If set to “0” no devices will be detected and available for streaming except those which are in device.allow list (see below). |
+vstreamer.videodevices.exclude.# | - | List of device names which must not be available for streaming. Useful for excluding built-in video devices. By default this list is empty. |
+vstreamer.videodevices.allow.# | - | List of device names which must be available for streaming. If device auto detecting is turned off, you can manually set a list of devices available for streaming. The server will try to open these devices even if they were not auto detected. By default this list is empty. |
+vstreamer.videodevices.timeout | 10 | Timeout in seconds for video devices. Timeout occurs after the signal from the device is lost or no image data can be grabbed. After this period the device will be deleted from list of devices available for streaming, but it may appear again if device gives off a signal.|
+
+@subsection log_level Log level
+
+Optional.
+
+- @b Name: log.level = [error|warning|info|debug]
+- @b Description: Logging level.
+- @b Default: info
+- @b Example: log.level = debug
+
+@subsection log_path File path
+
+Optional.
+
+- @b Name: log.file_path = [path to a file]
+- @b Description: Absolute or relative (to the current directory) path to a
+logging file. Logging is disabled if logging file is not defined. File should be
+writable. Backslash should be escaped with a backslash.
+- @b Example: log.file = /var/opt/ugcs/log/vstreamer/vstreamer.log
+- @b Example: log.file = C:\Users\John\AppData\Local\UGCS\logs\vstreamer\vstreamer.log
+
+@subsection log_file_max_size Maximum single file size
+
+Optional.
+
+- @b Name: log.single_max_size = [size]
+- @b Description: Maximum size of a single log file. When maximum size is exceeded,
+existing file is renamed by adding a time stamp and logging is continued into
+the empty file. [size] should be defined as a number postfixed by a case
+insensitive multiplier:
+    - Gb, G, Gbyte, Gbytes: for Giga-bytes
+    - Mb, M, Mbyte, Mbytes: for Mega-bytes
+    - Kb, K, Kbyte, Kbytes: for Kilo-bytes
+    - no postfix: for bytes
+- @b Default: 100 Mb
+- @b Example: log.single_max_size = 500 Mb
+
+@subsection ucs_disable For developers
+
+Using the parameter ucs.disable it is possible to connect this VSM directly to the client without using the server.
+@b This parameter is for developers only and should not be changed.
+		 
+@section example_for_video_stream_configuration Examples for video stream configuration
+
+All configurations for described video devices are set by default. Be sure that all necessary drivers are installed. 
+
+@subsection supported_device Examples of supported devices.
+
+Video source | Configuration properties (vstreamer.conf)
+-------|----------------------
+ArDrone camera | vstreamer.inputstream.0=Ardrone;tcp://192.168.1.1:5555;60;640;360 |
+GoPro camera | vstreamer.inputstream.1=GoPro;http://10.5.5.9:8080/live/amba.m3u8;30 |
+Web/USB camera | Autodetection: vstreamer.videodevices.autodetect=1 <br><br> Set manually: <br><br> vstreamer.videodevices.allow.0=USB Video Device <br><br> vstreamer.videodevices.allow.1=Webcam |
+
+@subsection streaming_endpoint Examples of streaming to endpoint.
+
+Stream type | Description
+-------|----------------------
+VLS stream |  1. To run sample http stream use VLC. <br><br> 2. Add to config file a string like this: <br><br> vstreamer.inputstream.2=VLC;http://127.0.0.1:8080;30  |
+UDP Stream (H264) | 1. To run sample UDP Stream use ffmpeg: <br><br> “ffmpeg -f dshow -i video="USB Video Device" -vcodec libx264 <br><br> -tune zerolatency -b 900k -f mpegts udp://127.0.0.1:1234” <br><br> 2. Add to config file string like this: <br><br> vstreamer.inputstream.2=UDP_Stream_Name;udp://127.0.0.1:1234;60 |
+RTP Stream (H264) | 1. To run sample RTP Stream use ffmpeg: <br><br> “ffmpeg -f dshow -i video="USB Video Device" -vcodec libx264 <br><br> -tune zerolatency -b 900k -f rtp rtp://127.0.0.1:1234” <br><br> 2. To read from this stream, you need create a .sdp file which describes the stream. So create a test.sdp file: <br><br> v=0 <br><br> o=- 0 0 IN IP4 127.0.0.1 <br><br> s=No Name <br><br> c=IN IP4 127.0.0.1 <br><br> t=0 0 <br><br> a=tool:libavformat 56.1.100 <br><br> m=video 1234 RTP/AVP 96 <br><br> b=AS:900 <br><br> a=rtpmap:96 H264/90000 <br><br> a=fmtp:96 packetization-mode=1 <br><br>  3. Add to config file string with path to sdp like that: <br><br> vstreamer.inputstream.2=RTP_Stream_Name;c://test.sdp |
+RTSP Stream (H264)  | 1. We checked this stream withan online sample <br><br> rtsp://184.72.239.149/vod/mp4:BigBuckBunny_115k.mov <br><br> 2.Add to config file string like this: <br><br> “vstreamer.inputstream.2=RTSP_Stream_Name; <br><br> rtsp://184.72.239.149/vod/mp4:BigBuckBunny_115k.mov” |
+
+@subsection broadcasting_endpoint Examples of  broadcasting to web services.
+
+After having correctly working video source you can stream to web services by using share button in video control of UgCS client. Supported services are Twitch, Youtube and Ustream.
+
+Stream type | Description
+-------|----------------------
+Ustream |  1. Register at http://www.ustream.tv/ . <br><br> 2. Create channel. <br><br> 3.	Visit channel Broadcast settings and open Encoder setting. <br><br> There you can find RTMP URL. Now you have URL for streaming looked like: RTMP URL/Stream key. <br><br> 4.	Put that URL in Ustream input box of UgCS video control and press OK. <br><br> 5.	Check your channel on Ustream. |
+Youtube	 | To be implemented. |
+Twitch	 | To be implemented. |
+
+@section supported_formats_and_devices Supported formats and devices
+
+List of supported:
+- video codecs - https://www.ffmpeg.org/general.html#Video-Codecs 
+- protocols - https://www.ffmpeg.org/general.html#Network-Protocols 
+- I/O devices - https://www.ffmpeg.org/general.html#Input_002fOutput-Devices 
+		 
+*/
